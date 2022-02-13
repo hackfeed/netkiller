@@ -13,7 +13,7 @@ typedef struct int_usb_device
 } int_usb_device_t;
 
 bool is_network_down = false;
-struct usb_device_id allowed_devices[] = {
+struct usb_device_id allowed_devs[] = {
     {USB_DEVICE(0x13fe, 0x3e00)},
 };
 
@@ -47,12 +47,12 @@ static bool is_dev_id_matched(struct usb_device_id *new_dev_id, const struct usb
 // Check if device is in allowed devices list.
 static bool *is_dev_allowed(struct usb_device_id *dev)
 {
-    unsigned long allowed_devices_len = sizeof(allowed_devices) / sizeof(struct usb_device_id);
+    unsigned long allowed_devs_len = sizeof(allowed_devs) / sizeof(struct usb_device_id);
 
     int i;
-    for (i = 0; i < allowed_devices_len; i++)
+    for (i = 0; i < allowed_devs_len; i++)
     {
-        if (is_dev_id_matched(dev, &allowed_devices[i]))
+        if (is_dev_id_matched(dev, &allowed_devs[i]))
         {
             return true;
         }
@@ -61,30 +61,25 @@ static bool *is_dev_allowed(struct usb_device_id *dev)
     return false;
 }
 
-// Check if connected device is acknowledged.
-static bool *is_dev_acked(void)
+// Check if changed device is acknowledged.
+static int count_not_acked_devs(void)
 {
     int_usb_device_t *temp;
     int count = 0;
 
     list_for_each_entry(temp, &connected_devices, list_node)
     {
-        if (is_dev_allowed(&temp->dev_id))
+        if (!is_dev_allowed(&temp->dev_id))
         {
             count++;
         }
     }
 
-    if (count == 0)
-    {
-        return false;
-    }
-
-    return true;
+    return count;
 }
 
 //  Add connected device to list of tracked devices.
-static void add_int_usb_device(struct usb_device *dev)
+static void add_int_usb_dev(struct usb_device *dev)
 {
     int_usb_device_t *new_usb_device = (int_usb_device_t *)kmalloc(sizeof(int_usb_device_t), GFP_KERNEL);
     struct usb_device_id new_id = {USB_DEVICE(dev->descriptor.idVendor, dev->descriptor.idProduct)};
@@ -93,7 +88,7 @@ static void add_int_usb_device(struct usb_device *dev)
 }
 
 //  Delete device from list of tracked devices.
-static void delete_int_usb_device(struct usb_device *dev)
+static void delete_int_usb_dev(struct usb_device *dev)
 {
     int_usb_device_t *device, *temp;
     list_for_each_entry_safe(device, temp, &connected_devices, list_node)
@@ -106,18 +101,21 @@ static void delete_int_usb_device(struct usb_device *dev)
     }
 }
 
-// Handler for USB insetion.
+// Handler for USB insertion.
 static void usb_dev_insert(struct usb_device *dev)
 {
-    add_int_usb_device(dev);
+    printk(KERN_INFO "netkiller: device connected with PID '%d' and VID '%d'\n",
+           dev->descriptor.idProduct, dev->descriptor.idVendor);
+    add_int_usb_dev(dev);
+    int not_acked_devs = count_not_acked_devs();
 
-    if (is_dev_acked())
+    if (!not_acked_devs)
     {
-        printk(KERN_INFO "netkiller: allowed device connected, skipping network killing\n");
+        printk(KERN_INFO "netkiller: no not allowed devices connected, skipping network killing\n");
     }
     else
     {
-        printk(KERN_INFO "netkiller: not allowed device connected, killing network\n");
+        printk(KERN_INFO "netkiller: %d not allowed devices connected, killing network\n", not_acked_devs);
         if (!is_network_down)
         {
             char *argv[] = {"/sbin/modprobe", "-r", "virtio_net", NULL};
@@ -138,15 +136,20 @@ static void usb_dev_insert(struct usb_device *dev)
 // Handler for USB removal.
 static void usb_dev_remove(struct usb_device *dev)
 {
-    if (is_dev_acked())
+    printk(KERN_INFO "netkiller: device disconnected with PID '%d' and VID '%d'\n",
+           dev->descriptor.idProduct, dev->descriptor.idVendor);
+    delete_int_usb_dev(dev);
+    int not_acked_devs = count_not_acked_devs();
+
+    if (not_acked_devs)
     {
-        printk(KERN_INFO "netkiller: allowed device disconnected, nothing to do\n");
+        printk(KERN_INFO "netkiller: %d not allowed devices connected, nothing to do\n", not_acked_devs);
     }
     else
     {
-        printk(KERN_INFO "netkiller: not allowed device disconnected, bringing network back\n");
         if (is_network_down)
         {
+            printk(KERN_INFO "netkiller: all not allowed devices are disconnected, bringing network back\n");
             char *argv[] = {"/sbin/modprobe", "virtio_net", NULL};
             char *envp[] = {"HOME=/", "TERM=linux", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", NULL};
             if (call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC > 0))
@@ -160,8 +163,6 @@ static void usb_dev_remove(struct usb_device *dev)
             }
         }
     }
-
-    delete_int_usb_device(dev);
 }
 
 // Handler for event's notifier.
