@@ -5,13 +5,6 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sergey Kononenko");
 MODULE_VERSION("1.0");
 
-// Wrapper for usb_device_id with added name field.
-typedef struct allowed_usb_device
-{
-    struct usb_device_id dev_id;
-    char *name;
-} allowed_usb_device_t;
-
 // Wrapper for usb_device_id with added list_head field to track devices.
 typedef struct int_usb_device
 {
@@ -20,8 +13,8 @@ typedef struct int_usb_device
 } int_usb_device_t;
 
 bool is_network_down = false;
-allowed_usb_device_t allowed_devices[] = {
-    {.dev_id = {USB_DEVICE(0x13fe, 0x3e00)}, .name = "allowed_usb"},
+struct usb_device_id allowed_devices[] = {
+    {USB_DEVICE(0x13fe, 0x3e00)},
 };
 
 // Declare and init the head node of the linked list.
@@ -51,56 +44,43 @@ static bool is_dev_id_matched(struct usb_device_id *new_dev_id, const struct usb
     return true;
 }
 
-// Check device for match and return name if device is allowed.
-static char *get_allowed_dev_name(struct usb_device_id *dev)
+// Check if device is in allowed devices list.
+static bool *is_dev_allowed(struct usb_device_id *dev)
 {
-    unsigned long allowed_devices_len = sizeof(allowed_devices) / sizeof(allowed_devices[0]);
+    unsigned long allowed_devices_len = sizeof(allowed_devices) / sizeof(struct usb_device_id);
 
     int i;
     for (i = 0; i < allowed_devices_len; i++)
     {
-        if (is_dev_id_matched(dev, &allowed_devices[i].dev_id))
+        if (is_dev_id_matched(dev, &allowed_devices[i]))
         {
-            int size = sizeof(allowed_devices[i].name);
-            char *name = (char *)kmalloc(size + 1, GFP_KERNEL);
-
-            int j;
-            for (j = 0; j < size; j++)
-            {
-                name[j] = allowed_devices[i].name[j];
-            }
-            name[size + 1] = '\0';
-
-            return name;
+            return true;
         }
     }
 
-    return NULL;
+    return false;
 }
 
-// Acknowledge device from list of devices.
-static char *ack_device(void)
+// Check if connected device is acknowledged.
+static bool *is_dev_acked(void)
 {
     int_usb_device_t *temp;
     int count = 0;
-    char *name;
 
     list_for_each_entry(temp, &connected_devices, list_node)
     {
-        name = get_allowed_dev_name(&temp->dev_id);
-        if (!name)
+        if (is_dev_allowed(&temp->dev_id))
         {
-            return NULL;
+            count++;
         }
-        count++;
     }
 
     if (count == 0)
     {
-        return NULL;
+        return false;
     }
 
-    return name;
+    return true;
 }
 
 //  Add connected device to list of tracked devices.
@@ -131,8 +111,7 @@ static void usb_dev_insert(struct usb_device *dev)
 {
     add_int_usb_device(dev);
 
-    char *name = ack_device();
-    if (name)
+    if (is_dev_acked())
     {
         printk(KERN_INFO "netkiller: allowed device connected, skipping network killing\n");
     }
@@ -159,10 +138,7 @@ static void usb_dev_insert(struct usb_device *dev)
 // Handler for USB removal.
 static void usb_dev_remove(struct usb_device *dev)
 {
-    delete_int_usb_device(dev);
-
-    char *name = ack_device();
-    if (name)
+    if (is_dev_acked())
     {
         printk(KERN_INFO "netkiller: allowed device disconnected, nothing to do\n");
     }
@@ -184,6 +160,8 @@ static void usb_dev_remove(struct usb_device *dev)
             }
         }
     }
+
+    delete_int_usb_device(dev);
 }
 
 // Handler for event's notifier.
@@ -214,7 +192,7 @@ static struct notifier_block usb_notify = {
 static int __init netkiller_init(void)
 {
     usb_register_notify(&usb_notify);
-    printk(KERN_INFO "netkiller: loaded.\n");
+    printk(KERN_INFO "netkiller: module loaded\n");
     return 0;
 }
 
@@ -222,7 +200,7 @@ static int __init netkiller_init(void)
 static void __exit netkiller_exit(void)
 {
     usb_unregister_notify(&usb_notify);
-    printk(KERN_INFO "netkiller: unloaded.\n");
+    printk(KERN_INFO "netkiller: module unloaded\n");
 }
 
 module_init(netkiller_init);
