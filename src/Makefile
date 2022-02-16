@@ -16,3 +16,5 @@ insmod:
 	sudo insmod $(TARGET).ko
 rmmod:
 	sudo rmmod $(TARGET).ko
+logs:
+	dmesg | grep $(TARGET) | grep -A $(LINES) 'module loaded'

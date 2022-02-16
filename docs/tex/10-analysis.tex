@@ -1,0 +1,291 @@
+\chapter{Аналитическая часть}
+
+\section{Постановка задачи}
+
+В соответствии с заданием необходимо разработать загружаемый модуля ядра Linux для отключения сетевого оборудования системы при подключении неизвестного USB--устройства. Для решения данной задачи необходимо:
+\begin{itemize}
+	\item исследовать механизмы ядра для обработки событий подключения и отключения USB--устройств;
+	\item исследовать структуры и функции ядра, предоставляющие информацию о подключенных USB--устройствах;
+	\item спроектировать и реализовать загружаемый модуль ядра.
+\end{itemize}
+
+\section{Уведомления в ядре Linux}
+
+\subsection{Уведомители}
+
+Ядро Linux содержит механизм, называемый <<уведомителями>> (\texttt{notifiers}) или <<цепочками уведомлений>> (\texttt{notifiers chains}), который позволяет различным подсистемам подписываться на асинхронные события от других подсистем. Цепочки уведомлений в настоящее время активно используется в ядре; существуют цепочки для событий \texttt{hotplug} памяти, изменения политики частоты процессора, события \texttt{USB hotplug}, загрузки и выгрузки модулей, перезагрузки системы, изменения сетевых устройств \cite{notifications}.
+
+В листинге \ref{lst:notifier_block} представлена структура \texttt{notifier\_block} \cite{notifier_block}.
+
+\begin{lstlisting}[
+	caption={Структура \texttt{notifier\_block}},
+	label={lst:notifier_block},
+	style={c},
+	]
+struct notifier_block {
+	notifier_fn_t notifier_call;
+	struct notifier_block __rcu *next;
+	int priority;
+};
+\end{lstlisting}
+
+Данная структура описана в \texttt{/include/linux/notifier.h}. Она содержит указатель на функцию--обработчик уведомления (\texttt{notifier\_call}), указатель на следующий уведомитель (\texttt{next}) и приоритет уведомителя (\texttt{priority}). Уведомители с более высоким значением приоритета выполняются первее.
+
+В листинге \ref{lst:notifier_fn_t} представлена сигнатура функии \texttt{notifier\_call}.
+
+\begin{lstlisting}[
+	caption={Тип \texttt{notifier\_fn\_t}},
+	label={lst:notifier_fn_t},
+	style={c},
+	]
+typedef	int (*notifier_fn_t)(struct notifier_block *nb, unsigned long action, void *data);
+\end{lstlisting}
+
+Сигнатура содержит указатель на уведомитель (\texttt{nb}), действие, при котором срабатывает функция (\texttt{action}) и данные, которые передаются от действия в обработчик (\texttt{data}).
+
+\subsection{Уведомитель изменений на USB--портах}
+
+Для регистрации уведомителя для USB--портов используются функции регистрации и удаления уведомителя, представленные в листинге \ref{lst:usb_notifiers}.
+
+\begin{lstlisting}[
+	caption={Уведомители на USB--портах},
+	label={lst:usb_notifiers},
+	style={c},
+	]
+	/* Events from the usb core */
+#define USB_DEVICE_ADD		    0x0001
+#define USB_DEVICE_REMOVE	0x0002
+#define USB_BUS_ADD		           0x0003
+#define USB_BUS_REMOVE		   0x0004
+extern void usb_register_notify(struct notifier_block *nb);
+extern void usb_unregister_notify(struct notifier_block *nb);
+\end{lstlisting}
+
+Прототипы и константы для действий описаны в файле\\ \texttt{/include/linux/notifier.h}, а реализации функций --- в файле\\ \texttt{/drivers/usb/core/notify.c}. Соответственно действие \texttt{USB\_DEVICE\_ADD} означает подключение нового устройства, а \texttt{USB\_DEVICE\_REMOVE} --- удаление.
+
+\section{USB--устройства в ядре Linux}
+
+\subsection{Структура \texttt{usb\_device}}
+
+Для хранения информации о USB--устройстве в ядре используется структура \texttt{usb\_device}, описанная в \texttt{/inlclude/linux/usb.h} \cite{usb_device}.
+
+Структура \texttt{usb\_device} предствалена в листинге \ref{lst:usb_device}.
+
+\begin{lstlisting}[
+	caption={Структура \texttt{usb\_device}},
+	label={lst:usb_device},
+	style={c},
+	]
+struct usb_device {
+	int		devnum;
+	char		devpath[16];
+	u32		route;
+	enum usb_device_state	state;
+	enum usb_device_speed	speed;
+	unsigned int		rx_lanes;
+	unsigned int		tx_lanes;
+	enum usb_ssp_rate	ssp_rate;
+	
+	struct usb_tt	*tt;
+	int		ttport;
+	
+	unsigned int toggle[2];
+	
+	struct usb_device *parent;
+	struct usb_bus *bus;
+	struct usb_host_endpoint ep0;
+	
+	struct device dev;
+	
+	struct usb_device_descriptor descriptor;
+	struct usb_host_bos *bos;
+	struct usb_host_config *config;
+	
+	struct usb_host_config *actconfig;
+	struct usb_host_endpoint *ep_in[16];
+	struct usb_host_endpoint *ep_out[16];
+	
+	char **rawdescriptors;
+	
+	unsigned short bus_mA;
+	u8 portnum;
+	u8 level;
+	u8 devaddr;
+	
+	unsigned can_submit:1;
+	unsigned persist_enabled:1;
+	unsigned have_langid:1;
+	unsigned authorized:1;
+	unsigned authenticated:1;
+	unsigned wusb:1;
+	unsigned lpm_capable:1;
+	unsigned usb2_hw_lpm_capable:1;
+	unsigned usb2_hw_lpm_besl_capable:1;
+	unsigned usb2_hw_lpm_enabled:1;
+	unsigned usb2_hw_lpm_allowed:1;
+	unsigned usb3_lpm_u1_enabled:1;
+	unsigned usb3_lpm_u2_enabled:1;
+	int string_langid;
+	
+	/* static strings from the device */
+	char *product;
+	char *manufacturer;
+	char *serial;
+	
+	struct list_head filelist;
+	
+	int maxchild;
+	
+	u32 quirks;
+	atomic_t urbnum;
+	
+	unsigned long active_duration;
+	
+#ifdef CONFIG_PM
+	unsigned long connect_time;
+	
+	unsigned do_remote_wakeup:1;
+	unsigned reset_resume:1;
+	unsigned port_is_suspended:1;
+#endif
+	struct wusb_dev *wusb_dev;
+	int slot_id;
+	enum usb_device_removable removable;
+	struct usb2_lpm_parameters l1_params;
+	struct usb3_lpm_parameters u1_params;
+	struct usb3_lpm_parameters u2_params;
+	unsigned lpm_disable_count;
+	
+	u16 hub_delay;
+	unsigned use_generic_driver:1;
+};
+\end{lstlisting}
+
+Каждое USB--устройство должно соответствовать спецификации USB \cite{usb_spec}, одним из требовании которой является наличие идентификатора поставщика (\texttt{Vendor ID (VID)}) и идентификатор продукта (\texttt{Product ID (PID)}). Эти данные присутствуют в поле \texttt{descriptor} структуры \texttt{usb\_device}. В листинге \ref{lst:usb_device_descriptor} представлена структура дескриптора \texttt{usb\_device\_descriptor}, описанная в \texttt{/include/uapi/linux/usb/ch9.h}.
+
+\begin{lstlisting}[
+	caption={Структура \texttt{usb\_device\_descriptor}},
+	label={lst:usb_device_descriptor},
+	style={c},
+	]
+/* USB_DT_DEVICE: Device descriptor */
+struct usb_device_descriptor {
+	__u8  bLength;
+	__u8  bDescriptorType;
+	
+	__le16 bcdUSB;
+	__u8  bDeviceClass;
+	__u8  bDeviceSubClass;
+	__u8  bDeviceProtocol;
+	__u8  bMaxPacketSize0;
+	__le16 idVendor;
+	__le16 idProduct;
+	__le16 bcdDevice;
+	__u8  iManufacturer;
+	__u8  iProduct;
+	__u8  iSerialNumber;
+	__u8  bNumConfigurations;
+} __attribute__ ((packed));
+
+#define USB_DT_DEVICE_SIZE		18
+\end{lstlisting}
+
+\subsection{Структура \texttt{usb\_device\_id}}
+
+При подключении USB--устройства к компьютеру, оно идентифицируется и идентификационная информация записывается в структуру \texttt{usb\_device\_id} \cite{usb_device_id}.
+
+Структура \texttt{usb\_device\_id} предствалена в листинге \ref{lst:usb_device_id}.
+
+\begin{lstlisting}[
+	caption={Структура \texttt{usb\_device\_id}},
+	label={lst:usb_device_id},
+	style={c},
+	]
+struct usb_device_id {
+	/* which fields to match against? */
+	__u16		match_flags;
+	
+	/* Used for product specific matches; range is inclusive */
+	__u16		idVendor;
+	__u16		idProduct;
+	__u16		bcdDevice_lo;
+	__u16		bcdDevice_hi;
+	
+	/* Used for device class matches */
+	__u8		bDeviceClass;
+	__u8		bDeviceSubClass;
+	__u8		bDeviceProtocol;
+	
+	/* Used for interface class matches */
+	__u8		bInterfaceClass;
+	__u8		bInterfaceSubClass;
+	__u8		bInterfaceProtocol;
+	
+	/* Used for vendor-specific interface matches */
+	__u8		bInterfaceNumber;
+	
+	/* not matched against */
+	kernel_ulong_t	driver_info
+	__attribute__((aligned(sizeof(kernel_ulong_t))));
+};
+\end{lstlisting}
+
+\section{Загружаемые модули ядра Linux}
+
+\subsection{Особенности загружаемых модулей}
+
+Одной из особенностей ядра Linux является способность расширения функциональности во время работы, без необходимости компиляции ядра заново. Таким образом, существует возможность добавить (или убрать) функциональность в ядро когда система запущена и работает. Часть кода, которая может быть добавлена в ядро во время работы, называется модулем ядра. Ядро Linux предлагает поддержку большого числа классов модулей. Каждый модуль --- это подготовленный объектный код, который может быть динамически подключен в работающее ядро, а позднее может быть выгружен из ядра.
+
+Каждый модуль ядра сам регистрирует себя для того, чтобы обслуживать в будущем запросы, и его функция инициализации (\texttt{module\_init}) немедленно прекращается. Задача инициализации модуля заключается в подготовке функций модуля для последующего вызова. Функция выхода модуля вызывается перед выгрузкой модуля из ядра. Функция выхода (\texttt{module\_exit}) должна отменить все изменения, сделанные функций инициализации, освободить захваченные в процессе работы модуля ресурсы. 
+
+Возможность выгрузить модуль помогает сократить время разработки --- нет необходимости перезагрузки системы при последовательном тестировании новых версий разрабатываемого модуля ядра.
+
+Модуль связан только с ядром и может вызывать только те функции, которые экспортированы ядром.
+
+\subsection{Пространства ядра и пользователя}
+
+Приложения работают в пользовательском пространстве, а ядро и его модули --- в пространстве ядра. Такое разделение пространств --- базовая концепция теории операционных систем.
+
+Ролью операционной системы является обеспечение программ надёжным доступом к аппаратной части компьютера. Операционная система должна обеспечивать независимую работу программ и защиту от несанкционированного доступа к ресурсам. Решение этих задач становится возможным только в том случае, если процессор обеспечивает защиту системного программного обеспечения от прикладных программ.
+
+Выбранный подход заключается в обеспечении разных режимов работы (или уровней) в самом центральном процессоре. Уровни играют разные роли и некоторые операции на более низких уровнях не допускаются; программный код может переключить один уровень на другой только ограниченным числом способов. Все современные процессоры имеют не менее двух уровней защиты, а некоторые, например семейство процессоров x86, имеют больше уровней; когда существует несколько уровней, используется самый высокий и самый низкий уровень защиты. 
+
+Ядро Linux выполняется на самом высоком уровне, где разрешено выполнение любых инструкций и доступ к произвольным участкам памяти, а приложения выполняются на самом низком уровне, в котором процессор регулирует прямой доступ оборудованию и несанкционированный доступ к памяти. Ядро выполняет переход из пользовательского пространства в пространство ядра, когда приложение делает системный вызов или приостанавливается аппаратным прерыванием. Код ядра, выполняя системный вызов, работает в контексте процесса --- он действует от имени вызывающего процесса и в состоянии получить данные в адресном пространстве процесса. Код, который обрабатывает прерывания является асинхронным по отношению к процессам и не связан с каким-либо определенным процессом.
+
+Ролью модуля ядра является расширение функциональности ядра без его перекомпиляции. Код модулей выполняется в пространстве ядра.
+
+\subsection{Вызов приложений пространства пользователя из пространства ядра}
+
+Для вызова приложений пространства пользователя из пространства ядра используется \texttt{usermode-helper API}. Чтобы создать процесс из пространства пользователя необходимо указать имя исполняемого файла, аргументы, с которыми требуется запустить программу, и переменные окружения \cite{umhelper}.
+
+В листинге \ref{lst:umh} представлена структура процесса, использующегося в \texttt{usermode-helper API} и сигнатура функции вызова \cite{umh}.
+
+\begin{lstlisting}[
+	caption={\texttt{usermode-helper API}},
+	label={lst:umh},
+	style={c},
+	]
+#define UMH_NO_WAIT	0	/* don't wait at all */
+#define UMH_WAIT_EXEC	1	/* wait for the exec, but not the process */
+#define UMH_WAIT_PROC	2	/* wait for the process to complete */
+#define UMH_KILLABLE	4	/* wait for EXEC/PROC killable */
+
+struct subprocess_info {
+	struct work_struct work;
+	struct completion *complete;
+	const char *path;
+	char **argv;
+	char **envp;
+	int wait;
+	int retval;
+	int (*init)(struct subprocess_info *info, struct cred *new);
+	void (*cleanup)(struct subprocess_info *info);
+	void *data;
+} __randomize_layout;
+
+extern int call_usermodehelper(const char *path, char **argv, char **envp, int wait);
+\end{lstlisting}
+
+\section*{Вывод}
+
+В данном разделе были рассмотрены механизмы ядра для обработки событий подключения и отключения USB--устройств --- уведомители (\texttt{notifiers}) ---, структуры и функции ядра для работы с ними, а также особенности загружаемых модулей ядра и понятия пространств ядра и пользователя, способ вызова приложений пространства пользователя из пространства ядра.
